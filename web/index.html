@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>스마트 가습기</title><style>
+*{box-sizing:border-box}body{font:16px system-ui;background:#edf3f5;color:#18313b;max-width:720px;margin:24px auto;padding:0 16px}section{background:white;padding:18px;margin:14px 0;border-radius:12px}h1{font-size:26px}h2{font-size:19px;margin-top:0}button,input,select{font:inherit;padding:9px;margin:4px 2px;max-width:100%}button{border:1px solid #a8bec5;border-radius:6px;background:#e7f3ef;cursor:pointer}button:disabled{opacity:.45;cursor:default}p{line-height:1.6}small{color:#4c6670}#reading{font-size:30px}#msg{white-space:pre-wrap;color:#a13720}pre{white-space:pre-wrap;font:14px system-ui}label{display:inline-block;margin:4px}input[type=number]{width:85px}
+</style><h1>스마트 가습기</h1>
+<p id="connection">연결 중…</p><p id="msg" role="status"></p>
+<section><div id="reading">-- °C / -- %</div><p id="state">상태 미확인</p><small id="detail"></small></section>
+<section><h2>제어 설정</h2>
+<p><label>목표 습도 <input id="target" type="number" min="40" max="47" value="45"> %</label><button onclick="act('/api/target',{a:val('target')})">저장</button></p>
+<button onclick="act('/api/mode',{a:1})">자동 제어 재개</button><button onclick="act('/api/mode',{a:0})">수동 모드</button><button onclick="act('/api/mode',{a:2})">일시정지</button>
+<p><small>보정·수동 송신·학습 시 자동 제어는 일시정지됩니다. 수동/일시정지 중에는 고습 경고만 표시합니다.</small></p></section>
+<section><h2>실제 상태 보정</h2><label>전원 <select id="power"><option value="0">모름</option><option value="1">꺼짐</option><option value="2">켜짐</option></select></label>
+<label>분무 (OFF면 기억된 단계) <select id="level"><option value="0">모름</option><option value="1">1단계</option><option value="2">2단계</option></select></label>
+<label>취침 <select id="sleep"><option value="0">모름</option><option value="1">해제</option><option value="2">작동 중</option></select></label>
+<label>취침 해제 후 복원 단계 <select id="resume"><option value="0">모름</option><option value="1">1단계</option><option value="2">2단계</option></select></label>
+<button onclick="syncState()">상태만 보정 (IR 전송 없음)</button>
+<p><small>실제 기기를 보고 선택하세요. 보정 후 자동 제어를 별도로 재개합니다. 최소 유지시간은 보정 시점부터 다시 계산합니다.</small></p></section>
+<section><h2>리모컨 · IR 송신</h2><div id="remote"></div><small>송신 성공은 가습기의 수신 확인이 아닙니다. 반응이 없다고 즉시 다시 누르지 말고 실제 상태를 확인하세요.</small></section>
+<section><h2>IR 학습</h2><label>버튼 <select id="slot"><option value="0">전원</option><option value="1">분무량</option><option value="2">취침</option></select></label>
+<button onclick="act('/api/ir/learn',{a:val('slot')})">학습 시작</button><button onclick="act('/api/ir/cancel',{})">학습 취소</button>
+<p id="learn">-</p><label>추가 반복 <input id="repeats" type="number" min="0" max="3" value="0"></label><label>RAW 주파수 kHz <input id="khz" type="number" min="30" max="60" value="38"></label>
+<button id="test" onclick="act('/api/ir/test',{a:val('repeats'),b:val('khz')})">시험 송신</button>
+<button id="save" onclick="saveIR()">정상 반응 확인 · 영구 저장</button><button onclick="eraseIR()">선택한 버튼 삭제</button>
+<p><small>시작 후 15초 안에 원래 리모컨 버튼을 한 번 누르세요. RAW는 단일 프레임만 지원하며 반복은 0이어야 합니다. 시험 송신 후 실제 전원·단계는 미확인으로 바뀝니다.</small></p></section>
+<section><h2>가습기 동작</h2><p>전원을 껐다 켜면 마지막 분무 단계를 복원합니다. 취침은 1단계로 바뀌며 해제하면 이전 단계로 돌아갑니다. 취침 중 전원 버튼은 먼저 취침만 해제하고, 다시 눌러야 꺼집니다.</p><small>자동 제어는 취침 해제 상태에서 분무 버튼만 사용합니다. 취침 중 분무 버튼 효과는 미검증이므로 상태 보정이 필요합니다.</small></section>
+<section><h2>최근 이벤트 (부팅 후 경과초)</h2><pre id="events">-</pre></section>
+<script>
+const el=id=>document.getElementById(id),val=id=>Number(el(id).value);
+const names=['전원','분무량','취침'],modes=['수동','자동','일시정지'],sources=['미확인','사용자 확인','IR 추정'];
+let s=null,busy=false,init=false,round=0;
+async function get(path){let r=await fetch(path,{cache:'no-store',signal:AbortSignal.timeout(6000)});if(!r.ok)throw Error('HTTP '+r.status);return r.json()}
+function render(){
+ el('connection').textContent='연결됨 · 부팅 후 '+s.at+'초';
+ el('reading').textContent=s.valid?(s.t/100).toFixed(1)+' °C / '+(s.h/100).toFixed(1)+' %':'센서 측정 대기 / 오류';
+ el('state').textContent=modes[s.m]+' · 전원 '+['모름','OFF','ON'][s.p]+' · 분무 '+(s.p===1?'정지':s.l?s.l+'단계':'모름')+' · 취침 '+['모름','해제','작동 중'][s.sleep]+' · 기억 '+(s.remembered||'모름')+' · 취침 복원 '+(s.resume||'모름')+' · '+sources[s.src];
+ el('detail').textContent='목표 '+s.target+'% · EMA '+(s.avg/100).toFixed(1)+'% · 데이터 경과 '+(s.age===4294967295?'없음':(s.age/1000).toFixed(1)+'초')+' · 센서 '+(s.ready?'준비됨':'준비 안 됨')+' · 오류 '+s.errors+'회 · IR/전원/단계 송신 '+s.counts.join('/')+(s.high?' · 고습 경고':'')+(s.fault?' · 센서 장애, 수동 재개 필요':'')+' · 저장된 자동 설정 '+(s.wanted?'ON':'OFF');
+ el('remote').replaceChildren();names.forEach((n,i)=>{let b=document.createElement('button');b.textContent=n+' IR 송신'+(s.saved[i]?'':' (미학습)');b.disabled=!s.saved[i]||s.learn===1||s.learn===2;b.onclick=()=>act('/api/ir/send',{a:i});el('remote').append(b)});
+ el('learn').textContent=['학습 대기','리모컨 수신 대기 (15초)','후보 수신됨','시간 초과','신호 거부: 길이/오류 확인'][s.learn]+(s.learn===2?' · '+names[s.slot]+' · 프로토콜 ID '+s.proto+' · '+s.bits+'비트 · RAW '+s.raw:'');
+ el('test').disabled=s.learn!==2;el('save').disabled=s.learn!==2||!s.tested;
+ if(!init){el('target').value=s.target;init=true}
+}
+function syncState(){const p=val('power'),sl=val('sleep');return act('/api/state/sync',{a:p,b:p===0?0:val('level'),c:p===0?0:sl,d:p===2&&sl===2?val('resume'):0})}
+async function refresh(){s=await get('/api/status');render()}
+async function act(path,data){
+ if(busy||!s)return;busy=true;el('msg').textContent='처리 중…';
+ try{let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({r:s.rev,...data}),signal:AbortSignal.timeout(6000)});
+ if(!r.ok)throw Error(r.status===409?'상태 변경 또는 동작 조건 미충족. 갱신된 화면과 학습/센서/상태를 확인하세요.':'요청 오류 HTTP '+r.status);
+ el('msg').textContent='완료';
+ }catch(e){el('msg').textContent=e.message+' 요청은 자동 재전송하지 않습니다.'}
+ try{await refresh()}catch(e){el('connection').textContent='연결 끊김 · 표시값이 오래되었을 수 있습니다.'}finally{busy=false}
+}
+function saveIR(){if(confirm('시험 송신에 가습기가 정상 반응했습니까?'))act('/api/ir/save',{a:1})}
+function eraseIR(){if(confirm('선택한 버튼의 저장 신호를 삭제합니까?'))act('/api/ir/delete',{a:val('slot')})}
+const ev=['부팅: 상태 미확인','사용자 상태 보정','모드 변경','IR 송신: 수신 미확인','학습 시작','센서 장애: 일시정지','센서 복구','학습 결과','학습 시간 초과','자동 송신 오류: 일시정지','목표 변경','시험 IR 송신','학습 영구 저장','IR 삭제','기기 특성 저장'];
+async function tick(){if(!busy){busy=true;try{await refresh();if(round++%3===0){let e=await get('/api/events');el('events').textContent=e.map(x=>x[0]+'초 · '+ev[x[1]]+' ('+x[2]+')').join('\n')}}catch(e){el('connection').textContent='연결 끊김 · 표시값이 오래되었을 수 있습니다.'}finally{busy=false}}setTimeout(tick,2000)}tick();
+</script></html>
