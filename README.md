@@ -2,13 +2,15 @@
 
 개발계획서 v1.1을 기반으로 작성한 **Arduino Uno R3 + W5100 Ethernet Shield + SHT45 + IR 송수신기** 펌웨어입니다. 기존 DHT11·LCD 스케치를 대체합니다. LCD와 DHT11은 사용하지 않습니다.
 
-현재 소스는 Uno 대상으로 컴파일되며, 실제 장치에 업로드하지 않았습니다. 이 프로젝트 폴더의 `.tools`에는 CLI와 필요한 라이브러리가 준비되어 있습니다.
+2026-10-24 기준 최신 펌웨어를 Uno R3(COM8)에 업로드하고 웹 API 응답·SHT45 측정·저장된 IR 신호 3개 유지를 확인했습니다. 분무 기억·취침 상태 전이는 자동 테스트를 통과했으며, 변경된 동작의 실제 기기 통합시험과 장시간 안정성 검증은 남아 있습니다.
+
+`.tools`의 CLI·라이브러리·빌드 산출물은 Git에 포함하지 않습니다. GitHub에서 처음 내려받았다면 아래의 `setup.ps1`을 먼저 실행하세요.
 
 ## 구현 기능
 
 - SHT45를 1초마다 측정하고 온도/습도 CRC 검증. 변환 대기 중 다른 작업을 수행합니다.
 - 모바일 브라우저에서 2초 주기로 온습도·추정 상태·오류 조회. 인터넷/CDN 없이 사용합니다.
-- 목표 40~47% RH 및 자동 모드 선호값, 기기 특성, IR 3개 버튼을 EEPROM에 저장합니다.
+- 목표 40~47% RH 및 자동 모드 선호값, IR 3개 버튼을 EEPROM에 저장합니다. 실제 전원·취침·기억 단계는 RAM에서만 관리합니다.
 - 전원·분무량·취침 IR 학습 → 시험 송신 → 사용자 정상 반응 확인 → 영구 저장.
 - **실제 상태 보정은 IR 송신 없이 내부 상태만 변경하며 자동 제어를 PAUSED로 전환합니다.**
 - 60초 상당 EMA, 히스테리시스, 최소 유지시간, 1/2단계 제어.
@@ -26,7 +28,7 @@
 | W5100 쉴드 | Uno에 장착, LAN 케이블로 공유기 연결 |
 | SHT45 SDA / SCL | A4 / A5, 전압 호환 회로 경유 |
 | SHT45 VCC / GND | 해당 모듈 사양에 맞는 전원 / 공통 GND |
-| IR 수신 DATA | D2 |
+| VS1838B IR 수신 OUT | D2, VCC·GND 핀 배열은 부품 사양 확인 |
 | IR 송신 트랜지스터 입력 | D3, 베이스 저항 경유 |
 | Ethernet CS / SPI | D10 / D11~D13, 다른 용도 사용 금지 |
 | SD CS | D4, SD 미사용 및 HIGH 유지 |
@@ -51,7 +53,13 @@ SUBNET  = {255, 255, 255, 0};
 
 제어 키나 로그인 없이 웹 화면에서 바로 조작합니다.
 
-## 현재 터미널에서 빌드·업로드
+## 설치·빌드·업로드
+
+처음 내려받은 프로젝트는 폴더명을 `auto_humidity`로 유지하세요. 스케치 파일명과 같아야 합니다. Windows PowerShell에서 해당 폴더를 열고 의존성을 설치합니다.
+
+```powershell
+.\setup.ps1
+```
 
 컴파일만 수행:
 
@@ -63,10 +71,10 @@ SUBNET  = {255, 255, 255, 0};
 
 ```powershell
 .\.tools\arduino-cli\arduino-cli.exe board list
-.\upload.ps1 -Port COM7
+.\upload.ps1 -Port COM8
 ```
 
-`COM7`은 이전에 확인한 포트이며 다시 확인해야 합니다. 스크립트는 컴파일 실패 시 업로드하지 않습니다. PowerShell 실행 정책으로 차단되면 현재 프로세스에만 `Set-ExecutionPolicy -Scope Process Bypass`를 적용할 수 있습니다.
+`COM8`은 마지막 업로드에서 확인한 포트입니다. 연결 환경에 따라 달라지므로 `board list`의 실제 포트로 바꾸세요. 스크립트는 컴파일 실패 시 업로드하지 않습니다. PowerShell 실행 정책으로 차단되면 현재 프로세스에만 `Set-ExecutionPolicy -Scope Process Bypass`를 적용할 수 있습니다.
 
 다른 PC에서 의존성을 준비하려면 `setup.ps1`을 실행하세요. 인터넷이 필요하며 Arduino AVR 보드 코어는 Arduino 기본 데이터 폴더에, 라이브러리는 프로젝트의 `.tools/user`에 설치됩니다. 검증 버전은 `arduino:avr 1.8.8`, `Ethernet 2.0.2`, `IRremote 4.7.1`입니다. Arduino IDE를 이용한다면 같은 라이브러리를 IDE 라이브러리 관리자에도 설치해야 합니다.
 
@@ -159,7 +167,7 @@ EEPROM 레이아웃과 IR 스키마를 유지하여 기존 목표 설정과 학�
 | 파일 | 역할 |
 |---|---|
 | auto_humidity.ino | Arduino 진입점 |
-| Config.h | 핀·IP·키·유지시간 |
+| Config.h | 핀·IP·유지시간 |
 | Firmware.cpp | 센서·상태·IR·웹/API·이벤트 통합 |
 | Control.h | 하드웨어와 분리한 제어 판단 |
 | Storage.h | EEPROM 레코드·CRC·커밋 |
@@ -178,6 +186,8 @@ python tests/test_assets.py
 
 검증된 Uno 빌드의 메모리 수치는 VALIDATION.md에 기록합니다. 전역 RAM 이외에 실행 중 스택·인터럽트 메모리가 필요하므로 컴파일 성공만으로 장시간 안정성이 검증되지는 않습니다.
 
-**아직 필요한 실제 시험:** SHT45 전기적 적합성, W5100 웹 접속·케이블 분리, IR 반응과 반복 형식, 단계/취침 특성, UNKNOWN 차단, 센서 분리·복구, EEPROM 저장 중 전원 차단, 습도 제어·소음 비교 및 24~72시간 연속 운전. 계획서의 추세 예측 조기 정지는 2차 최적화 항목으로 남겨 두었습니다.
+**확인 완료:** 최신 버전 업로드, 웹 API 응답, SHT45 정상 측정, 기존 IR 저장 슬롯 유지. 사용자는 기존 회로에서 IR 수신·근거리 송신 동작도 확인했으나 원하는 2m 송신 거리는 확보되지 않았습니다.
+
+**아직 필요한 실제 시험:** SHT45 전기적 적합성, LAN 장애 복구, 새 상태 모델과 실제 가습기 반응의 일치, UNKNOWN 차단, 센서 분리·복구, EEPROM 저장 중 전원 차단, IR 송신 거리 개선, 습도 제어·소음 비교 및 24~72시간 연속 운전. 계획서의 추세 예측 조기 정지는 2차 최적화 항목으로 남겨 두었습니다.
 
 공식 참고: [SHT45](https://sensirion.com/products/catalog/SHT45), [Arduino IRremote](https://github.com/Arduino-IRremote/Arduino-IRremote), [Ethernet](https://github.com/arduino-libraries/Ethernet), [AVR Wire](https://github.com/arduino/ArduinoCore-avr/tree/master/libraries/Wire).
