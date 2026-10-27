@@ -4,7 +4,7 @@
 *{box-sizing:border-box}body{font:16px system-ui;background:#edf3f5;color:#18313b;max-width:720px;margin:24px auto;padding:0 16px}section{background:white;padding:18px;margin:14px 0;border-radius:12px}h1{font-size:26px}h2{font-size:19px;margin-top:0}button,input,select{font:inherit;padding:9px;margin:4px 2px;max-width:100%}button{border:1px solid #a8bec5;border-radius:6px;background:#e7f3ef;cursor:pointer}button:disabled{opacity:.45;cursor:default}p{line-height:1.6}small{color:#4c6670}#reading{font-size:30px}#msg{white-space:pre-wrap;color:#a13720}pre{white-space:pre-wrap;font:14px system-ui}label{display:inline-block;margin:4px}input[type=number]{width:85px}
 </style><h1>스마트 가습기</h1>
 <p id="connection">연결 중…</p><p id="msg" role="status"></p>
-<section><div id="reading">-- °C / -- %</div><p id="state">상태 미확인</p><small id="detail"></small></section>
+<section><div id="reading">-- °C / -- %</div><div id="co2" style="font-size:24px">CO₂ 예열 중</div><p id="state">상태 미확인</p><small id="detail"></small></section>
 <section><h2>제어 설정</h2>
 <p><label>목표 습도 <input id="target" type="number" min="40" max="47" value="45"> %</label><button onclick="act('/api/target',{a:val('target')})">저장</button></p>
 <button onclick="act('/api/mode',{a:1})">자동 제어 재개</button><button onclick="act('/api/mode',{a:0})">수동 모드</button><button onclick="act('/api/mode',{a:2})">일시정지</button>
@@ -32,6 +32,7 @@ async function get(path){let r=await fetch(path,{cache:'no-store',signal:AbortSi
 function render(){
  el('connection').textContent='연결됨 · 부팅 후 '+s.at+'초';
  el('reading').textContent=s.valid?(s.t/100).toFixed(1)+' °C / '+(s.h/100).toFixed(1)+' %':'센서 측정 대기 / 오류';
+ el('co2').textContent=s.co2Status===2?'CO₂ '+s.co2+' ppm':s.co2Status===0?'CO₂ 예열 중 (약 1분)':'CO₂ 측정 대기 / 통신 오류';
  el('state').textContent=modes[s.m]+' · 전원 '+['모름','OFF','ON'][s.p]+' · 분무 '+(s.p===1?'정지':s.l?s.l+'단계':'모름')+' · 취침 '+['모름','해제','작동 중'][s.sleep]+' · 기억 '+(s.remembered||'모름')+' · 취침 복원 '+(s.resume||'모름')+' · '+sources[s.src];
  el('detail').textContent='목표 '+s.target+'% · EMA '+(s.avg/100).toFixed(1)+'% · 데이터 경과 '+(s.age===4294967295?'없음':(s.age/1000).toFixed(1)+'초')+' · 센서 '+(s.ready?'준비됨':'준비 안 됨')+' · 오류 '+s.errors+'회 · IR/전원/단계 송신 '+s.counts.join('/')+(s.high?' · 고습 경고':'')+(s.fault?' · 센서 장애, 수동 재개 필요':'')+' · 저장된 자동 설정 '+(s.wanted?'ON':'OFF');
  el('remote').replaceChildren();names.forEach((n,i)=>{let b=document.createElement('button');b.textContent=n+' IR 송신'+(s.saved[i]?'':' (미학습)');b.disabled=!s.saved[i]||s.learn===1||s.learn===2;b.onclick=()=>act('/api/ir/send',{a:i});el('remote').append(b)});

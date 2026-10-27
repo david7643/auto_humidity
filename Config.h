@@ -2,8 +2,12 @@
 #include <stdint.h>
 // Extra decoders exceed Uno flash with the full UI. RAW fallback stays enabled.
 #define HUMIDIFIER_EXTENDED_IR 0
+// USB diagnostics disabled to fit CO2 support in Uno flash; errors remain in API.
+#define HUMIDIFIER_SERIAL_DEBUG 0
 namespace Config {
 constexpr uint8_t IR_RX = 2, IR_TX = 3, SD_CS = 4, ETH_CS = 10;
+constexpr uint8_t CO2_RX = 6, CO2_TX = 7; // MH-Z19E TX -> D6, RX -> D7
+constexpr uint32_t CO2_WARMUP_MS = 60000UL, CO2_POLL_MS = 5000UL;
 constexpr uint8_t SHT_ADDRESS = 0x44;
 // Set an unused address outside your router's DHCP pool. No DHCP blocking.
 constexpr uint8_t IP[4] = {192, 168, 0, 50};

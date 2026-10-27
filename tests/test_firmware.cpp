@@ -28,6 +28,33 @@ static void sample(uint16_t t,uint16_t h) {
   sensorTick(fakeNow);
 }
 int main() {
+  // CO2 UART: warmup, exact command, fragmented/noisy frames, checksum,
+  // timeout, stale data, recovery and millis rollover. No control side effects.
+  co2StartedAt=100;
+  co2Tick(60099);assert(co2Status(60099)==0 && co2Serial.output.empty());
+  co2Tick(60100);
+  assert(co2Serial.output==std::vector<uint8_t>({255,1,134,0,0,0,0,0,121}));
+  co2Serial.input={0,255,255,0x86,0x02};co2Tick(60101);
+  assert(!co2HasSample);
+  co2Serial.input={0x60,0x47,0,0,0,0xD1};co2Tick(60102);
+  assert(co2Ppm==608 && co2Status(60102)==2);
+  assert(mode==PAUSED && power==POWER_UNKNOWN && fakeSends==0);
+  co2Tick(65100);
+  co2Serial.input={255,0x86,0x02,0x60,0x47,0,0,0,0};co2Tick(65101);
+  assert(co2SampleAt==60102); // Bad checksum cannot refresh the last reading.
+  co2Tick(66100);assert(!co2Waiting);
+  assert(co2Status(75102)==1);
+  mode=AUTO;
+  co2Tick(75102);co2Tick(76102);
+  assert(mode==AUTO && !sensorFault && fakeSends==0);
+  co2Tick(80102);
+  co2Serial.input={255,0x86,0,0,0,0,0,0,0x7A};co2Tick(80103);
+  assert(co2SampleAt==60102); // Valid checksum but zero ppm is invalid.
+  co2Serial.input={255,0x86,0x02,0x60,0x47,0,0,0,0xD1};co2Tick(80104);
+  assert(co2Status(80104)==2);
+  co2SampleAt=UINT32_MAX-100;
+  assert(co2Status(100)==2 && co2Status(15000)==1);
+  mode=PAUSED;
   loadSettings();
   assert(settings.target==45 && !settings.autoWanted && power==POWER_UNKNOWN && mode==PAUSED);
   // Hysteresis, protection precedence, unknown state, timers and rollover.
@@ -153,5 +180,11 @@ int main() {
   has(mutate("/api/state/sync","&a=2&b=1"),"400"); // Old UI cannot confirm new fields.
   forgetState();loadSettings();assert(power==POWER_UNKNOWN && rememberedLevel==0 && sleepState==0);
   uint32_t n=0;assert(!number("4294967296",n));assert(number("4294967295",n));
+  const auto co2Writes=co2Serial.output.size();
+  learnState=1;learnAt=fakeNow;co2Waiting=true;co2Used=3;
+  firmwareTick();
+  assert(!co2Serial.listening && !co2Waiting && !co2Used);
+  assert(co2Serial.output.size()==co2Writes);
+  learnState=0;firmwareTick();assert(co2Serial.listening);
   std::cout<<"All firmware tests passed\n";
 }

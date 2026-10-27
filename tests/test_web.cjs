@@ -9,7 +9,7 @@ function element(id) {
     replaceChildren(){this.children=[]},append(x){this.children.push(x)}});
   return elements.get(id);
 }
-const state = {rev:1,t:2500,h:4500,avg:4450,trend:0,valid:1,ready:1,age:10,at:60,
+const state = {rev:1,t:2500,h:4500,co2:608,co2Status:2,avg:4450,trend:0,valid:1,ready:1,age:10,at:60,
  target:45,p:2,l:1,m:2,wanted:1,src:1,sync:0,fault:0,high:0,errors:0,
  counts:[0,0,0],saved:[1,1,0],learn:0,slot:0,proto:7,bits:32,raw:0,tested:0,remembered:2,resume:0,sleep:1};
 const calls=[];
@@ -27,6 +27,13 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
  await settle();await settle();
  assert.match(element('reading').textContent,/25.0.*45.0/);
+ assert.match(element('co2').textContent,/608 ppm/);
+ state.co2Status=0;await vm.runInContext('refresh()',context);
+ assert.match(element('co2').textContent,/1분/);
+ state.co2Status=1;await vm.runInContext('refresh()',context);
+ assert.match(element('co2').textContent,/통신 오류/);
+ assert.doesNotMatch(element('co2').textContent,/608/);
+ state.co2Status=2;await vm.runInContext('refresh()',context);
  assert.equal(element('remote').children[2].disabled,true);
  assert.equal(html.includes('id="key"'),false);
  element('power').value='1';element('level').value='2';element('sleep').value='1';

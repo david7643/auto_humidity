@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <Ethernet.h>
+#include <SoftwareSerial.h>
 #include "Config.h"
 #include "Control.h"
 #include "Storage.h"
@@ -24,6 +25,49 @@
 #include <IRremote.hpp>
 
 namespace {
+SoftwareSerial co2Serial(Config::CO2_RX, Config::CO2_TX);
+uint16_t co2Ppm = 0;
+uint32_t co2StartedAt = 0, co2RequestAt = 0, co2SampleAt = 0;
+uint8_t co2Frame[9], co2Used = 0;
+bool co2Waiting = false, co2HasSample = false, co2Warm = false;
+// Status: 0 warming, 1 waiting/error, 2 fresh. Never used by humidity control.
+uint8_t co2Status(uint32_t now) {
+  if (!co2Warm) return 0;
+  return co2HasSample && uint32_t(now - co2SampleAt) < 15000UL ? 2 : 1;
+}
+void co2Tick(uint32_t now) {
+  if (!co2Warm) {
+    if (uint32_t(now - co2StartedAt) < Config::CO2_WARMUP_MS) return;
+    co2Warm = true;
+    co2RequestAt = now - Config::CO2_POLL_MS;
+  }
+  // Consume only buffered bytes; never wait for a UART response.
+  uint8_t budget = 64;
+  while (budget-- && co2Serial.available()) {
+    uint8_t b = co2Serial.read();
+    if (!co2Waiting) continue;
+    if (!co2Used && b != 0xFF) continue;
+    if (co2Used == 1 && b != 0x86) { co2Used = b == 0xFF ? 1 : 0; continue; }
+    co2Frame[co2Used++] = b;
+    if (co2Used == 9) {
+      uint8_t sum = 0;
+      for (uint8_t i = 1; i < 9; ++i) sum += co2Frame[i];
+      uint16_t ppm = uint16_t(co2Frame[2]) * 256 + co2Frame[3];
+      if (!sum && ppm >= 400 && ppm <= 10000) {
+        co2Ppm = ppm; co2SampleAt = now; co2HasSample = true; co2Waiting = false;
+      }
+      co2Used = 0;
+    }
+  }
+  if (co2Waiting && uint32_t(now - co2RequestAt) >= 1000UL) {
+    co2Waiting = false; co2Used = 0;
+  }
+  if (!co2Waiting && uint32_t(now - co2RequestAt) >= Config::CO2_POLL_MS) {
+    const uint8_t command[] = {0xFF, 0x01, 0x86, 0, 0, 0, 0, 0, 0x79};
+    co2Used = 0; co2RequestAt = now; co2Waiting = true;
+    co2Serial.write(command, sizeof(command));
+  }
+}
 Settings settings;
 uint8_t settingsSlot = 0;
 IrRecord ir; // Shared EEPROM/learning scratch buffer, not three RAM copies.
@@ -93,13 +137,17 @@ void sensorTick(uint32_t now) {
     uint8_t b[6];
     uint8_t received = Wire.requestFrom(Config::SHT_ADDRESS, uint8_t(6));
     if (received != 6) {
+#if HUMIDIFIER_SERIAL_DEBUG
       if (sensorErrors < 3) { Serial.print(F("SHT45 received bytes: ")); Serial.println(received); }
+#endif
       while (Wire.available()) Wire.read();
       sensorFailure();
     } else {
       for (uint8_t i = 0; i < 6; ++i) b[i] = Wire.read();
       if (sensorCrc(b) != b[2] || sensorCrc(b + 3) != b[5]) {
+#if HUMIDIFIER_SERIAL_DEBUG
         if (sensorErrors < 3) Serial.println(F("SHT45 CRC error"));
+#endif
         sensorFailure();
       }
       else {
@@ -126,7 +174,9 @@ void sensorTick(uint32_t now) {
     uint8_t result = Wire.endTransmission();
     if (result == 0) { converting = true; conversionAt = now; }
     else {
+#if HUMIDIFIER_SERIAL_DEBUG
       if (sensorErrors < 3) { Serial.print(F("SHT45 command error: ")); Serial.println(result); }
+#endif
       sensorFailure();
     }
   }
@@ -318,6 +368,8 @@ void statusReply() {
   out.print(F("{\"rev\":")); out.print(revision);
   out.print(F(",\"t\":")); out.print(temperature);
   out.print(F(",\"h\":")); out.print(humidity);
+  out.print(F(",\"co2\":")); out.print(co2Ppm);
+  out.print(F(",\"co2Status\":")); out.print(co2Status(millis()));
   out.print(F(",\"avg\":")); out.print(filtered);
   out.print(F(",\"trend\":")); out.print(trend);
   out.print(F(",\"valid\":")); out.print(sampleOK && hasSample ? 1 : 0);
@@ -565,10 +617,14 @@ void networkTick(uint32_t now) {
 }
 } // namespace
 void firmwareBegin() {
+#if HUMIDIFIER_SERIAL_DEBUG
   Serial.begin(9600);
+#endif
+  co2Serial.begin(9600); co2StartedAt = millis();
   pinMode(Config::SD_CS, OUTPUT); digitalWrite(Config::SD_CS, HIGH);
   loadSettings();
   Wire.begin(); Wire.setWireTimeout(25000, true);
+#if HUMIDIFIER_SERIAL_DEBUG
   uint8_t found = 0;
   for (uint8_t address = 1; address < 127; ++address) {
     Wire.beginTransmission(address);
@@ -578,6 +634,7 @@ void firmwareBegin() {
     }
   }
   if (!found) Serial.println(F("No I2C device: check SHT45 power, SDA=A4, SCL=A5."));
+#endif
   IrReceiver.begin(Config::IR_RX, false); IrSender.begin(Config::IR_TX);
   Ethernet.init(Config::ETH_CS);
   uint8_t mac[6]; memcpy(mac, Config::MAC, sizeof(mac));
@@ -585,14 +642,23 @@ void firmwareBegin() {
     IPAddress(Config::GATEWAY), IPAddress(Config::SUBNET));
   Ethernet.setRetransmissionTimeout(100); Ethernet.setRetransmissionCount(1);
   server.begin(); powerAt = levelAt = millis(); event(0);
+#if HUMIDIFIER_SERIAL_DEBUG
   Serial.print(F("Smart humidifier: http://")); Serial.println(Ethernet.localIP());
   Serial.println(F("Boot PAUSED; sync actual state, then resume AUTO."));
   if (Ethernet.hardwareStatus() == EthernetNoHardware)
     Serial.println(F("Ethernet shield not detected; check hardware."));
+#endif
 }
 void firmwareTick() {
   uint32_t now = millis();
   sensorTick(now); learnTick(now);
+  // SoftwareSerial masks interrupts for each byte. Keep IR learning/tests clear
+  // of CO2 traffic; failed/old CO2 readings never change the control mode.
+  if (learnState == 1 || learnState == 2) {
+    co2Serial.stopListening(); co2Waiting = false; co2Used = 0;
+  } else {
+    co2Serial.listen(); co2Tick(now);
+  }
   networkTick(now); // User requests precede automatic decisions; no IR queue.
   controlTick(millis());
 }
